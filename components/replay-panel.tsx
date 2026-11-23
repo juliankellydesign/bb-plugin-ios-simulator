@@ -60,9 +60,23 @@ const ActivityEvents = memo(function ActivityEvents({ events, current, viewing, 
   </div>;
 });
 
-export function ReplayPanel({ base, threadId, udid, status: initialStatus, onModeChange, onSaved, children }: {
+export interface ReplayControlsProps {
+  viewing: boolean;
+  canReplay: boolean;
+  canCapture: boolean;
+  saving: boolean;
+  activityOpen: boolean;
+  activityId: string;
+  capture(): void;
+  setViewing(viewing: boolean): void;
+  toggleActivity(): void;
+}
+
+export function ReplayPanel({ base, threadId, udid, status: initialStatus, onModeChange, onSaved, renderDock, children }: {
   base: string; threadId: string; udid: string; status: ReplayStatus | undefined;
-  onModeChange(replaying: boolean): void; onSaved(): void; children?: ReactNode;
+  onModeChange(replaying: boolean): void; onSaved(): void;
+  renderDock?: (controls: ReplayControlsProps) => ReactNode;
+  children?: ReactNode;
 }) {
   const rpc = useRpc<typeof rpcContract>();
   const [status, setStatus] = useState(initialStatus);
@@ -156,45 +170,68 @@ export function ReplayPanel({ base, threadId, udid, status: initialStatus, onMod
   };
   const timeline = viewing ? clip?.events ?? [] : events;
   const current = viewing ? timeline.filter((event) => event.at <= position).at(-1)?.id : undefined;
+  const canCapture = !saving && Boolean(status?.recording && status.bufferedMs > 0);
+  const canReplay = Boolean(selectedId);
+  const dockControls: ReplayControlsProps = {
+    viewing,
+    canReplay,
+    canCapture,
+    saving,
+    activityOpen,
+    activityId,
+    capture: () => void save(),
+    setViewing: changeMode,
+    toggleActivity: () => setActivityOpen((open) => !open),
+  };
 
   return (
     <div className="replay-panel flex min-h-0 flex-1 flex-col">
-      <div className="replay-toolbar flex shrink-0 items-center gap-1.5 px-2 py-2">
-        <div role="group" aria-label="Simulator view" className="replay-view-switch flex shrink-0 rounded-lg bg-muted/60 p-0.5">
-          <Button size="sm" variant="ghost" className={`h-10 min-w-14 rounded-md px-3 ${controlMotion}`} aria-pressed={!viewing} onClick={() => changeMode(false)}>Live</Button>
-          <Button size="sm" variant="ghost" className={`h-10 min-w-14 rounded-md px-3 ${controlMotion}`} aria-pressed={viewing} disabled={!selectedId} onClick={() => changeMode(true)}>Replay</Button>
+      {!renderDock ? (
+        <div className="replay-toolbar flex shrink-0 items-center gap-1.5 px-2 py-2">
+          <div role="group" aria-label="Simulator view" className="replay-view-switch flex shrink-0 rounded-lg bg-muted/60 p-0.5">
+            <Button size="sm" variant="ghost" className={`h-10 min-w-14 rounded-md px-3 ${controlMotion}`} aria-pressed={!viewing} onClick={() => changeMode(false)}>Live</Button>
+            <Button size="sm" variant="ghost" className={`h-10 min-w-14 rounded-md px-3 ${controlMotion}`} aria-pressed={viewing} disabled={!selectedId} onClick={() => changeMode(true)}>Replay</Button>
+          </div>
+          <Button size="sm" variant="ghost" className={`replay-capture h-10 px-2 ${controlMotion}`} onClick={() => void save()} disabled={!canCapture}>
+            <Glyph name="capture" />{saving ? "Capturing…" : "Capture 30s"}
+          </Button>
+          <Button size="sm" variant="ghost" aria-label="Activity" aria-expanded={activityOpen} aria-controls={activityId}
+            className={`replay-activity-toggle ml-auto h-10 w-10 shrink-0 px-2 text-muted-foreground ${controlMotion}`}
+            onClick={() => setActivityOpen((open) => !open)}>
+            <Glyph name="activity" />
+          </Button>
         </div>
-        <Button size="sm" variant="ghost" className={`replay-capture h-10 px-2 ${controlMotion}`} onClick={() => void save()} disabled={saving || !status?.recording || status.bufferedMs <= 0}>
-          <Glyph name="capture" />{saving ? "Capturing…" : "Capture 30s"}
-        </Button>
-        <Button size="sm" variant="ghost" aria-label="Activity" aria-expanded={activityOpen} aria-controls={activityId}
-          className={`replay-activity-toggle ml-auto h-10 w-10 shrink-0 px-2 text-muted-foreground ${controlMotion}`}
-          onClick={() => setActivityOpen((open) => !open)}>
-          <Glyph name="activity" />
-        </Button>
-      </div>
+      ) : null}
       {error ? <p role="alert" className="px-3 py-2 text-xs text-destructive">{error}</p> : null}
       {viewing ? <>
-        <div className="replay-stage relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/20 p-4">
+        <div className="replay-stage relative flex min-h-0 flex-1 items-center justify-center overflow-hidden bg-muted/15 p-4">
           <canvas ref={canvas} aria-label="Saved simulator replay" className="replay-canvas max-h-full max-w-full rounded-lg bg-black object-contain shadow-sm" />
           {!clip && !error ? <span className="absolute text-xs text-muted-foreground">Loading replay…</span> : null}
         </div>
-        <div className="replay-transport shrink-0 px-3 pb-2 pt-1">
-          <div className="flex items-center gap-2">
-            <Button size="icon" variant="ghost" className={`h-10 w-10 shrink-0 ${controlMotion}`} aria-label={playing ? "Pause" : "Play"} onClick={() => void togglePlayback()} disabled={!clip || !!error}>
+        <div className="replay-transport shrink-0 bg-muted/15 px-3 pb-3 pt-1">
+          <div className="mx-auto flex max-w-xl items-center gap-1.5 rounded-2xl bg-background px-2 py-1 shadow-sm ring-1 ring-border/60">
+            <Button size="sm" variant="secondary" className={`h-8 shrink-0 rounded-lg px-2.5 text-xs ${controlMotion}`} onClick={() => changeMode(false)}>
+              Live
+            </Button>
+            <Button size="icon" variant="ghost" className={`size-8 shrink-0 rounded-lg ${controlMotion}`} aria-label={playing ? "Pause" : "Play"} onClick={() => void togglePlayback()} disabled={!clip || !!error}>
               <Glyph name={playing ? "pause" : "play"} />
             </Button>
-            <input aria-label="Replay position" type="range" className="h-10 min-w-0 flex-1 cursor-pointer accent-foreground disabled:cursor-default" min={clip?.startAt ?? 0} max={clip?.endAt ?? 1}
-            step={1} value={clip ? Math.max(clip.startAt, Math.min(clip.endAt, position)) : 0} disabled={!clip || !!error} onChange={(event) => seek(Number(event.target.value))} />
-            <span className="w-20 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{clip ? `${timecode(position - clip.startAt)} / ${timecode(clip.endAt - clip.startAt)}` : "—"}</span>
+            <input aria-label="Replay position" type="range" className="h-8 min-w-0 flex-1 cursor-pointer accent-foreground disabled:cursor-default" min={clip?.startAt ?? 0} max={clip?.endAt ?? 1}
+              step={1} value={clip ? Math.max(clip.startAt, Math.min(clip.endAt, position)) : 0} disabled={!clip || !!error} onChange={(event) => seek(Number(event.target.value))} />
+            <span className="w-16 shrink-0 text-right text-[11px] tabular-nums text-muted-foreground">{clip ? `${timecode(position - clip.startAt)} / ${timecode(clip.endAt - clip.startAt)}` : "—"}</span>
+            <Button size="icon" variant="ghost" aria-label="Activity" aria-expanded={activityOpen} aria-controls={activityId}
+              className={`size-8 shrink-0 rounded-lg text-muted-foreground ${controlMotion}`}
+              onClick={() => setActivityOpen((open) => !open)}>
+              <Glyph name="activity" />
+            </Button>
           </div>
           {clips.length > 1 ? <select aria-label="Saved replay" value={selectedId} onChange={(event) => { setSelected(event.target.value); changeMode(true); }}
-            className={`replay-clip-picker h-10 w-full min-w-0 rounded-md bg-transparent px-2 text-xs text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${controlMotion}`}>
+            className={`replay-clip-picker mt-1 h-8 w-full min-w-0 rounded-md bg-transparent px-2 text-xs text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring ${controlMotion}`}>
             {clips.map((item) => <option key={item.id} value={item.id}>Capture at {clock(item.createdAt)} · {timecode(item.endAt - item.startAt)}</option>)}
           </select> : null}
         </div>
       </> : <div className="replay-live relative flex min-h-0 flex-1 flex-col">{children}</div>}
-      {activityOpen ? <section id={activityId} aria-label={viewing ? "Replay activity" : "Recent activity"} className="replay-activity flex max-h-[35%] min-h-0 shrink-0 flex-col border-t border-border/60">
+      {activityOpen ? <section id={activityId} aria-label={viewing ? "Replay activity" : "Recent activity"} className="replay-activity flex max-h-[35%] min-h-0 shrink-0 flex-col border-t border-border/60 bg-background">
         <div className="min-h-0 overflow-y-auto px-3 pb-2">
           <div className="flex items-center justify-between px-2 pb-1 pt-3 text-[11px] font-medium"><span>Activity</span><span className="tabular-nums text-muted-foreground">{Math.min(100, timeline.length)}</span></div>
           {timelineError && !viewing ? <p className="py-3 text-xs text-muted-foreground">Activity unavailable: {timelineError}</p> : null}
@@ -211,6 +248,7 @@ export function ReplayPanel({ base, threadId, udid, status: initialStatus, onMod
           </div>
         </div>
       </section> : null}
+      {!viewing && renderDock ? renderDock(dockControls) : null}
     </div>
   );
 }

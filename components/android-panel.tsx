@@ -12,7 +12,14 @@ import { Icon } from "@/components/ui/icon";
 const describe = (error: unknown) => error instanceof Error ? error.message : String(error);
 
 /** Initial Android transport: one bounded PNG capture at a time, about 1 fps. */
-export function AndroidPanel({ threadId }: PluginThreadPanelProps) {
+export function AndroidPanel({
+  threadId,
+  platform = "android",
+  onPlatformChange,
+}: PluginThreadPanelProps & {
+  platform?: "ios" | "android";
+  onPlatformChange?: (platform: "ios" | "android") => void;
+}) {
   const rpc = useRpc<typeof androidRpcContract>();
   const pluginId = usePluginId();
   const base = `/api/v1/plugins/${pluginId}/http/android/screenshot`;
@@ -73,6 +80,11 @@ export function AndroidPanel({ threadId }: PluginThreadPanelProps) {
               const result = await rpc.call("androidAttach", { threadId, device: selectedDevice?.id ?? null });
               setSelected(result.serial);
             })}>{busy ? "Starting…" : "Attach"}</Button>}
+        {onPlatformChange ? (
+          <Button size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={() => onPlatformChange(platform === "ios" ? "android" : "ios")}>
+            iOS
+          </Button>
+        ) : null}
       </div>
       {error ? <p role="alert" className="border-b border-border px-3 py-2 text-xs text-destructive">{error}</p> : null}
       {state?.ready.problems.length ? <div className="space-y-1 border-b border-border px-3 py-2">

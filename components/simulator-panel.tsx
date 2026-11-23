@@ -34,7 +34,7 @@ import { cn } from "@/lib/utils";
 import { BEZEL_ASSET_VERSION, fitBezel, isDeviceBezel, type DeviceBezel } from "@/lib/device-bezel";
 import { displayPointToRaw, screenGeometry } from "@/lib/screen-geometry";
 import { startVideoStream, webCodecsAvailable, type VideoStats } from "@/components/video-stream";
-import { ReplayPanel } from "@/components/replay-panel";
+import { ReplayPanel, type ReplayControlsProps } from "@/components/replay-panel";
 import { DevicePicker } from "@/components/device-picker";
 
 type Session = SimulatorState["sessions"][number];
@@ -217,6 +217,8 @@ function DeviceScreen({
   const [mode, setMode] = useState<"video" | "mjpeg">(() => (webCodecsAvailable() ? "video" : "mjpeg"));
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const touchCursorRef = useRef<HTMLDivElement>(null);
+  const touchDiscRef = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ width: 0, height: 0 });
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -226,13 +228,31 @@ function DeviceScreen({
   // one position per display refresh, so coalesce them.
   const pendingMove = useRef<{ x: number; y: number } | null>(null);
   const moveFrame = useRef<number | null>(null);
+  const setTouchPressed = useCallback((pressed: boolean) => {
+    const disc = touchDiscRef.current;
+    if (!disc) return;
+    disc.style.transform = pressed ? "scale(0.86)" : "scale(1)";
+    disc.style.backgroundColor = pressed ? "rgba(255, 255, 255, 0.48)" : "rgba(255, 255, 255, 0.26)";
+    disc.style.borderColor = pressed ? "rgba(255, 255, 255, 0.95)" : "rgba(255, 255, 255, 0.72)";
+  }, []);
+  const updateTouchCursor = useCallback((event: ReactPointerEvent<HTMLElement>, visible = true) => {
+    const cursor = touchCursorRef.current;
+    const rect = surfaceRef.current?.getBoundingClientRect();
+    if (!cursor || !rect || rect.width === 0 || rect.height === 0) return;
+    const x = Math.max(0, Math.min(rect.width, event.clientX - rect.left));
+    const y = Math.max(0, Math.min(rect.height, event.clientY - rect.top));
+    cursor.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, -50%)`;
+    cursor.style.opacity = visible && inputEnabled ? "1" : "0";
+  }, [inputEnabled]);
   useEffect(() => {
     if (inputEnabled) return;
     pointerDown.current = false;
     pendingMove.current = null;
     if (moveFrame.current !== null) cancelAnimationFrame(moveFrame.current);
     moveFrame.current = null;
-  }, [inputEnabled]);
+    if (touchCursorRef.current) touchCursorRef.current.style.opacity = "0";
+    setTouchPressed(false);
+  }, [inputEnabled, setTouchPressed]);
   const flushMove = useCallback(() => {
     moveFrame.current = null;
     const point = pendingMove.current;
@@ -353,6 +373,9 @@ function DeviceScreen({
   const localFit = bezel ? fitBezel(box, bezel, geometry.bodyRotation) : null;
   const width = localFit?.screenWidth ?? fit.screenWidth;
   const height = localFit?.screenHeight ?? fit.screenHeight;
+  const shortSide = Math.min(width, height);
+  const logicalShortSide = kind === "phone" ? 393 : 820;
+  const touchDiameter = Math.max(22, Math.min(72, Math.round((shortSide / logicalShortSide) * 44)));
   const quarterTurn = geometry.contentRotation === 90 || geometry.contentRotation === 270;
   const contentWidth = quarterTurn ? height : width;
   const contentHeight = quarterTurn ? width : height;
@@ -375,6 +398,8 @@ function DeviceScreen({
     if (!inputEnabled || event.button !== 0) return;
     event.preventDefault();
     event.currentTarget.focus();
+    updateTouchCursor(event, true);
+    setTouchPressed(true);
     const point = normalized(event);
     if (!point) return;
     event.currentTarget.setPointerCapture(event.pointerId);
@@ -382,13 +407,25 @@ function DeviceScreen({
     send(HID.TOUCH, { type: "begin", ...point });
   };
   const onPointerMove = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!inputEnabled || !pointerDown.current) return;
+    if (!inputEnabled) return;
+    updateTouchCursor(event, true);
+    if (!pointerDown.current) return;
     const point = normalized(event);
     if (!point) return;
     pendingMove.current = point;
     if (moveFrame.current === null) moveFrame.current = requestAnimationFrame(flushMove);
   };
   const onPointerUp = (event: ReactPointerEvent<HTMLDivElement>) => {
+    setTouchPressed(false);
+    const rect = surfaceRef.current?.getBoundingClientRect();
+    const inside = Boolean(
+      rect &&
+        event.clientX >= rect.left &&
+        event.clientX <= rect.right &&
+        event.clientY >= rect.top &&
+        event.clientY <= rect.bottom,
+    );
+    updateTouchCursor(event, inside);
     if (!inputEnabled || !pointerDown.current) return;
     // Deliver the last move before the lift so a fast flick keeps its velocity.
     if (moveFrame.current !== null) {
@@ -398,6 +435,14 @@ function DeviceScreen({
     pointerDown.current = false;
     const point = normalized(event) ?? { x: 0.5, y: 0.5 };
     send(HID.TOUCH, { type: "end", ...point });
+  };
+  const onPointerEnter = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!inputEnabled) return;
+    updateTouchCursor(event, true);
+  };
+  const onPointerLeave = () => {
+    if (pointerDown.current) return;
+    if (touchCursorRef.current) touchCursorRef.current.style.opacity = "0";
   };
   const onKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const shortcut = shortcutFor(event);
@@ -479,13 +524,19 @@ function DeviceScreen({
         aria-disabled={!inputEnabled}
         role="application"
         aria-label="Simulator screen. Click to tap, drag to swipe, type to send keys."
-        className="absolute overflow-hidden bg-black outline-none ring-ring focus-visible:ring-2"
+        className={cn(
+          "absolute overflow-hidden bg-black outline-none ring-ring focus-visible:ring-2",
+          inputEnabled && "cursor-none",
+        )}
         style={{ width, height, left: localFit?.screenX ?? fit.bezel, top: localFit?.screenY ?? fit.bezel,
           borderRadius: bezel?.screen.mask ? 0 : (localFit?.screenRadius ?? fit.screenRadius), touchAction: "none",
+          cursor: inputEnabled ? "none" : undefined,
           ...(bezel?.screen.mask && localFit ? {
             maskImage: `url("${base}/bezel/image?udid=${encodeURIComponent(udid)}&part=mask&rotation=${localFit.angle}&v=${BEZEL_ASSET_VERSION}")`,
             maskSize: "100% 100%", maskMode: "alpha", maskRepeat: "no-repeat",
           } : {}) }}
+        onPointerEnter={onPointerEnter}
+        onPointerLeave={onPointerLeave}
         onPointerDown={onPointerDown}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
@@ -550,6 +601,26 @@ function DeviceScreen({
             Reconnecting input…
           </div>
         ) : null}
+        <div
+          ref={touchCursorRef}
+          aria-hidden="true"
+          data-testid="simulator-touch-cursor"
+          className="pointer-events-none absolute left-0 top-0 z-10 opacity-0 transition-opacity duration-150 will-change-transform"
+          style={{ width: touchDiameter, height: touchDiameter }}
+        >
+          <div
+            ref={touchDiscRef}
+            className="size-full rounded-full"
+            style={{
+              backgroundColor: "rgba(255, 255, 255, 0.26)",
+              border: "1.5px solid rgba(255, 255, 255, 0.72)",
+              boxShadow: "0 1px 6px rgba(0, 0, 0, 0.28), inset 0 0 0 1px rgba(0, 0, 0, 0.14)",
+              backdropFilter: "blur(0.5px)",
+              transition:
+                "transform 110ms cubic-bezier(0.22, 1, 0.36, 1), background-color 90ms ease, border-color 90ms ease",
+            }}
+          />
+        </div>
       </div>
       </div>
     </div>
@@ -574,7 +645,7 @@ function ControlButton({
       <Button
         variant="ghost"
         size="icon"
-        className={cn("size-10 shrink-0 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none", pending && "bg-accent text-foreground")}
+        className={cn("size-8 shrink-0 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none", pending && "bg-accent text-foreground")}
         aria-label={label}
         aria-busy={pending || undefined}
         onClick={onClick}
@@ -604,11 +675,11 @@ function DeviceOptions({ children }: { children: ReactNode }) {
     document.addEventListener("keydown", escape);
     return () => { document.removeEventListener("pointerdown", outside); document.removeEventListener("keydown", escape); };
   }, [open]);
-  return <div ref={root} className="relative" onBlur={(event) => {
+  return <div ref={root} className="relative shrink-0" onBlur={(event) => {
     if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setOpen(false);
   }}>
     <span title="Device options" className="inline-flex">
-      <Button ref={trigger} variant="ghost" size="icon" className="size-10 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transition-none"
+      <Button ref={trigger} variant="ghost" size="icon" className="size-8 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
         aria-label="Device options" aria-expanded={open} aria-controls={open ? id : undefined} onClick={() => setOpen(!open)}>
         <svg aria-hidden="true" className="size-4" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
       </Button>
@@ -619,7 +690,14 @@ function DeviceOptions({ children }: { children: ReactNode }) {
   </div>;
 }
 
-export function SimulatorPanel({ threadId }: PluginThreadPanelProps) {
+export function SimulatorPanel({
+  threadId,
+  platform = "ios",
+  onPlatformChange,
+}: PluginThreadPanelProps & {
+  platform?: "ios" | "android";
+  onPlatformChange?: (platform: "ios" | "android") => void;
+}) {
   const rpc = useRpc<typeof rpcContract>();
   const pluginId = usePluginId();
   const base = pluginHttpBase(pluginId);
@@ -811,49 +889,232 @@ export function SimulatorPanel({ threadId }: PluginThreadPanelProps) {
     }}
   /> : null;
 
-  return (
-    <div className="simulator-panel @container flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground antialiased tabular-nums" style={{ containerType: "size" }}>
-      <div className="simulator-header flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2">
-        <DevicePicker devices={devices} attached={attached} value={activeUdid} onChange={setSelected} disabled={devices.length === 0}>
-          <Icon name="Smartphone" className="hidden size-4 shrink-0 text-muted-foreground @[360px]:block" />
-          <span className="min-w-0 flex-1 py-0.5">
-            <span className="block truncate text-xs font-medium">{activeDevice?.name ?? (state ? "Select a device" : "Loading devices…")}</span>
-            <span className="mt-0.5 flex min-w-0 items-center gap-1.5 truncate text-[11px] text-muted-foreground">
-              {isAttached ? <span aria-hidden="true" className={cn("size-1.5 shrink-0 rounded-full", ownsHumanControl ? "bg-emerald-500" : "bg-muted-foreground/60")} /> : null}
-              <span role="status" title={isAttached ? controlLabel : undefined} className="truncate">{isAttached ? controlLabel : activeDevice?.runtime ?? "iOS Simulator"}</span>
-            </span>
+  const renderBottomDock = (replayControls?: ReplayControlsProps) => (
+    <div className="simulator-footer flex shrink-0 justify-center bg-muted/15 px-2.5 pb-2.5 pt-1">
+      <div
+        className="simulator-control-dock flex max-w-full items-center gap-0.5 rounded-2xl bg-background p-1 shadow-sm ring-1 ring-border/60"
+        role="group"
+        aria-label="Simulator controls"
+      >
+        <DevicePicker
+          devices={devices}
+          attached={attached}
+          value={activeUdid}
+          onChange={setSelected}
+          disabled={devices.length === 0}
+          placement="top"
+          className="min-w-0 max-w-[140px] flex-1 @[420px]:max-w-[190px]"
+          triggerClassName="min-h-8 h-8 px-2 py-0"
+        >
+          <span
+            aria-hidden="true"
+            title={isAttached ? controlLabel : undefined}
+            className={cn(
+              "size-1.5 shrink-0 rounded-full",
+              !isAttached
+                ? "bg-muted-foreground/40"
+                : ownsHumanControl
+                  ? "bg-emerald-500"
+                  : "bg-amber-500",
+            )}
+          />
+          <span className="min-w-0 flex-1 truncate text-xs font-medium">
+            {activeDevice?.name ?? (state ? "Select device" : "Loading…")}
           </span>
-          <svg aria-hidden="true" viewBox="0 0 16 16" className="size-3.5 shrink-0 text-muted-foreground" fill="none" stroke="currentColor" strokeWidth="1.5"><path d="m5 6 3 3 3-3" strokeLinecap="round" strokeLinejoin="round" /></svg>
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 16 16"
+            className="size-3 shrink-0 text-muted-foreground"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.5"
+          >
+            <path d="m5 10 3-3 3 3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
         </DevicePicker>
-        {isAttached && activeSession ? <span title={ownsHumanControl && state?.agentControl === "never" ? "Agent control is turned off in plugin settings" : undefined}>
-          <Button size="sm" variant={ownsHumanControl ? "ghost" : "secondary"}
-            className="h-10 shrink-0 rounded-lg px-3 transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transition-none"
-            aria-label={ownsHumanControl ? "Let agent drive" : "Take control"} aria-busy={busy === "control" || undefined}
-            disabled={busy === "control" || (ownsHumanControl && state?.agentControl === "never")}
-            onClick={() => handoff(ownsHumanControl ? "agent" : "human")}>
-            {busy === "control" ? <Icon name={glyph("spinner")} className="size-3.5 animate-spin motion-reduce:animate-none" /> :
-              <svg aria-hidden="true" viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-                <path d={ownsHumanControl ? "M4 12h15m-6-6 6 6-6 6" : "m4 3 7 18 2-8 8-2z"} />
-              </svg>}
-            {ownsHumanControl ? "Let agent drive" : "Take control"}
-          </Button>
-        </span> : (
+
+        {isAttached && activeSession ? (
+          <span
+            title={
+              ownsHumanControl && state?.agentControl === "never"
+                ? "Agent control is turned off in plugin settings"
+                : `${controlLabel} — click to ${ownsHumanControl ? "let agent drive" : "take control"}`
+            }
+            className="inline-flex shrink-0"
+          >
+            <Button
+              size="icon"
+              variant={ownsHumanControl ? "ghost" : "secondary"}
+              className="size-8 shrink-0 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
+              aria-label={ownsHumanControl ? "Let agent drive" : "Take control"}
+              aria-busy={busy === "control" || undefined}
+              disabled={busy === "control" || (ownsHumanControl && state?.agentControl === "never")}
+              onClick={() => handoff(ownsHumanControl ? "agent" : "human")}
+            >
+              {busy === "control" ? (
+                <Icon name={glyph("spinner")} className="size-3.5 animate-spin motion-reduce:animate-none" />
+              ) : (
+                <svg
+                  aria-hidden="true"
+                  viewBox="0 0 24 24"
+                  className="size-3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.7"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d={ownsHumanControl ? "M4 12h15m-6-6 6 6-6 6" : "m4 3 7 18 2-8 8-2z"} />
+                </svg>
+              )}
+            </Button>
+          </span>
+        ) : (
           <Button
             size="sm"
-            className="h-10 min-w-20 rounded-lg transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transition-none"
+            className="h-8 shrink-0 rounded-lg px-2.5 text-xs transition-[background-color,color,transform] duration-150 active:scale-[0.96] motion-reduce:transition-none"
             onClick={() => void attach(activeUdid)}
             disabled={busy !== null || (devices.length === 0 && problems.length > 0)}
-                >
+          >
             {busy === "attach" ? (
-              <Icon name={glyph("spinner")} className="size-4 animate-spin" />
+              <Icon name={glyph("spinner")} className="size-3.5 animate-spin" />
             ) : (
-              <Icon name={glyph("play")} className="size-4" />
+              <Icon name={glyph("play")} className="size-3.5" />
             )}
             {busy === "attach" ? "Starting…" : "Attach"}
           </Button>
         )}
-      </div>
 
+        {activeSession && activeUdid ? (
+          <>
+            <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border/60" />
+            <ControlButton icon={glyph("home")} label="Home (⌘⇧H)" onClick={() => pressButton("home")} disabled={!canDrive} pending={controlPending("home")} />
+            <ControlButton icon={glyph("lock")} label="Lock (⌘L)" onClick={() => pressButton("lock")} disabled={!canDrive} pending={controlPending("lock")} />
+            <ControlButton icon={glyph("rotate")} label="Rotate (⌘→)" onClick={rotate} disabled={!canDrive} pending={controlPending("rotate")} />
+            <ControlButton icon={glyph("camera")} label="Save screenshot (⌘S)" onClick={screenshot} />
+            {replayControls ? (
+              <span title={replayControls.saving ? "Capturing…" : "Capture last 30s"} className="inline-flex shrink-0">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="replay-capture size-8 shrink-0 rounded-lg text-muted-foreground transition-[background-color,color,transform] duration-150 hover:text-foreground active:scale-[0.96] motion-reduce:transition-none"
+                  aria-label="Capture 30s"
+                  disabled={!replayControls.canCapture}
+                  onClick={replayControls.capture}
+                >
+                  <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" className="size-4">
+                    <path d="M3 11a9 9 0 1 1 2.6 7M3 4v7h7M12 7v5l3 2" />
+                  </svg>
+                </Button>
+              </span>
+            ) : null}
+          </>
+        ) : null}
+
+        <span aria-hidden="true" className="mx-0.5 h-4 w-px shrink-0 bg-border/60" />
+        <DeviceOptions key={activeUdid ?? "none"}>
+          {isAttached && activeSession ? (
+            <div className="mb-1 flex items-center justify-between gap-2 rounded-lg bg-muted/40 px-2.5 py-1.5">
+              <span role="status" className="flex items-center gap-1.5 text-[11px] font-medium">
+                <span aria-hidden="true" className={cn("size-1.5 rounded-full", ownsHumanControl ? "bg-emerald-500" : "bg-amber-500")} />
+                {controlLabel}
+              </span>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-6 rounded-md px-2 text-[11px]"
+                disabled={busy === "control" || (ownsHumanControl && state?.agentControl === "never")}
+                onClick={() => handoff(ownsHumanControl ? "agent" : "human")}
+              >
+                {ownsHumanControl ? "Let agent drive" : "Take control"}
+              </Button>
+            </div>
+          ) : null}
+
+          {replayControls ? (
+            <div className="mb-1 space-y-0.5 border-b border-border/60 pb-1">
+              <div className="flex items-center justify-between gap-2 px-2 py-1">
+                <span className="text-muted-foreground">View</span>
+                <div role="group" aria-label="Simulator view" className="flex rounded-lg bg-muted/60 p-0.5">
+                  <Button size="sm" variant="ghost" className="h-6 rounded-md px-2 text-[11px]" aria-pressed={!replayControls.viewing} onClick={() => replayControls.setViewing(false)}>
+                    Live
+                  </Button>
+                  <Button size="sm" variant="ghost" className="h-6 rounded-md px-2 text-[11px]" aria-pressed={replayControls.viewing} disabled={!replayControls.canReplay} onClick={() => replayControls.setViewing(true)}>
+                    Replay
+                  </Button>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                variant="ghost"
+                aria-expanded={replayControls.activityOpen}
+                aria-controls={replayControls.activityId}
+                className="h-8 w-full justify-between rounded-lg px-2"
+                onClick={replayControls.toggleActivity}
+              >
+                <span>Activity</span>
+                <span className="text-[11px] text-muted-foreground">{replayControls.activityOpen ? "Hide" : "Show"}</span>
+              </Button>
+            </div>
+          ) : null}
+
+          {activeSession && activeUdid ? (
+            <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1">
+              <span className="text-muted-foreground">Volume</span>
+              <div className="flex gap-1">
+                <ControlButton icon={glyph("volume-down")} label="Volume down (⌘↓)" onClick={() => pressButton("volume-down")} disabled={!canDrive} pending={controlPending("volume-down")} />
+                <ControlButton icon={glyph("volume-up")} label="Volume up (⌘↑)" onClick={() => pressButton("volume-up")} disabled={!canDrive} pending={controlPending("volume-up")} />
+              </div>
+            </div>
+          ) : null}
+
+          {onPlatformChange ? (
+            <div className="flex items-center justify-between gap-2 border-t border-border/60 px-2 py-1.5">
+              <span className="text-muted-foreground">Platform</span>
+              <div role="group" aria-label="Simulator platform" className="flex rounded-lg bg-muted/60 p-0.5">
+                {(["ios", "android"] as const).map((value) => (
+                  <Button
+                    key={value}
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 rounded-md px-2 text-[11px]"
+                    aria-pressed={platform === value}
+                    onClick={() => onPlatformChange(value)}
+                  >
+                    {value === "ios" ? "iOS" : "Android"}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {activeSession && activeUdid ? (
+            <>
+              <details className="border-t border-border/60 px-2 text-muted-foreground">
+                <summary className="flex min-h-8 cursor-pointer items-center">Stream details</summary>
+                <dl className="space-y-1 pb-2.5 text-[11px] tabular-nums">
+                  <div className="flex justify-between"><dt>Format</dt><dd>{videoStats ? "H.264" : "Image stream"}</dd></div>
+                  {screen ? <div className="flex justify-between"><dt>Resolution</dt><dd>{screen.width} × {screen.height}</dd></div> : null}
+                  {videoStats ? <>
+                    <div className="flex justify-between"><dt>Frame rate</dt><dd>{videoStats.paintedFps} fps</dd></div>
+                    <div className="flex justify-between"><dt>Decode queue</dt><dd>{videoStats.queue}</dd></div>
+                    <div className="flex justify-between"><dt>Bandwidth</dt><dd>{Math.round(videoStats.bytesPerSecond / 1024)} KB/s</dd></div>
+                  </> : null}
+                </dl>
+              </details>
+              <div className="space-y-0.5 border-t border-border/60 pt-1">
+                <Button size="sm" variant="ghost" className="h-8 w-full justify-start rounded-lg px-2" onClick={() => detach(false)} disabled={busy !== null || !isAttached}><Icon name={glyph("unplug")} />Detach</Button>
+                <Button size="sm" variant="ghost" className="h-8 w-full justify-start rounded-lg px-2 text-destructive hover:text-destructive" onClick={() => detach(true)} disabled={busy !== null || !canDrive}><Icon name={glyph("power")} />Shut down</Button>
+              </div>
+            </>
+          ) : null}
+        </DeviceOptions>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="simulator-panel @container flex h-full min-h-0 flex-col overflow-hidden bg-background text-foreground antialiased tabular-nums" style={{ containerType: "size" }}>
       {error ? (
         <p role="alert" className="border-b border-border px-3 py-2 text-xs text-destructive">
           {error}
@@ -893,65 +1154,50 @@ export function SimulatorPanel({ threadId }: PluginThreadPanelProps) {
         </div>
       ) : null}
 
-      {liveStage ? (isAttached && activeUdid ? <ReplayPanel key={`${threadId}:${activeUdid}`} base={base} threadId={threadId} udid={activeUdid}
-        status={state?.replay[activeUdid]} onModeChange={setReplaying} onSaved={refetch}>{liveStage}</ReplayPanel> : liveStage) : (
-        <div className="flex min-h-0 flex-1 items-center justify-center p-6">
-          <div className="max-w-xs text-center">
-            <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-muted/70"><Icon name="Smartphone" className="size-6 text-muted-foreground" /></div>
-            <p className="mt-4 text-sm font-medium text-balance">
-              {state === null
-                ? "Loading…"
-                : devices.length === 0
-                  ? "No iOS simulators yet"
-                  : "Your app, right here"}
-            </p>
-            <p className="mt-2 text-xs leading-relaxed text-pretty text-muted-foreground">
-              {state === null
-                ? ""
-                : devices.length === 0
-                  ? "Install the iOS platform in Xcode → Settings → Components, then come back."
-                  : "Choose a device and attach it, or ask your agent to run the app. You’ll share the same screen."}
-            </p>
+      {liveStage ? (
+        isAttached && activeUdid ? (
+          <ReplayPanel
+            key={`${threadId}:${activeUdid}`}
+            base={base}
+            threadId={threadId}
+            udid={activeUdid}
+            status={state?.replay[activeUdid]}
+            onModeChange={setReplaying}
+            onSaved={refetch}
+            renderDock={renderBottomDock}
+          >
+            {liveStage}
+          </ReplayPanel>
+        ) : (
+          <>
+            {liveStage}
+            {!replaying ? renderBottomDock() : null}
+          </>
+        )
+      ) : (
+        <>
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div className="max-w-xs text-center">
+              <div className="mx-auto flex size-14 items-center justify-center rounded-2xl bg-muted/70"><Icon name="Smartphone" className="size-6 text-muted-foreground" /></div>
+              <p className="mt-4 text-sm font-medium text-balance">
+                {state === null
+                  ? "Loading…"
+                  : devices.length === 0
+                    ? "No iOS simulators yet"
+                    : "Your app, right here"}
+              </p>
+              <p className="mt-2 text-xs leading-relaxed text-pretty text-muted-foreground">
+                {state === null
+                  ? ""
+                  : devices.length === 0
+                    ? "Install the iOS platform in Xcode → Settings → Components, then come back."
+                    : "Choose a device in the dock below and attach it, or ask your agent to run the app."}
+              </p>
+            </div>
           </div>
-        </div>
+          {renderBottomDock()}
+        </>
       )}
-
-      {activeSession && activeUdid && !replaying ? (
-        <div className="simulator-footer flex shrink-0 justify-center bg-muted/15 px-3 pb-3 pt-1">
-          <div className="simulator-control-dock flex items-center gap-0.5 rounded-2xl bg-background p-1 shadow-sm ring-1 ring-border/60" role="group" aria-label="Simulator controls">
-          <ControlButton icon={glyph("home")} label="Home (⌘⇧H)" onClick={() => pressButton("home")} disabled={!canDrive} pending={controlPending("home")} />
-          <ControlButton icon={glyph("lock")} label="Lock (⌘L)" onClick={() => pressButton("lock")} disabled={!canDrive} pending={controlPending("lock")} />
-          <ControlButton icon={glyph("rotate")} label="Rotate (⌘→)" onClick={rotate} disabled={!canDrive} pending={controlPending("rotate")} />
-          <ControlButton icon={glyph("camera")} label="Save screenshot (⌘S)" onClick={screenshot} />
-          <span aria-hidden="true" className="mx-1 h-4 w-px bg-border/60" />
-          <DeviceOptions key={activeUdid}>
-            <div className="flex items-center justify-between gap-2 rounded-lg px-2 py-1">
-              <span className="text-muted-foreground">Volume</span>
-              <div className="flex gap-1">
-                <ControlButton icon={glyph("volume-down")} label="Volume down (⌘↓)" onClick={() => pressButton("volume-down")} disabled={!canDrive} pending={controlPending("volume-down")} />
-                <ControlButton icon={glyph("volume-up")} label="Volume up (⌘↑)" onClick={() => pressButton("volume-up")} disabled={!canDrive} pending={controlPending("volume-up")} />
-              </div>
-            </div>
-            <details className="border-t border-border/60 px-2 text-muted-foreground">
-              <summary className="flex min-h-10 cursor-pointer items-center">Stream details</summary>
-              <dl className="space-y-1 pb-3 text-[11px] tabular-nums">
-                <div className="flex justify-between"><dt>Format</dt><dd>{videoStats ? "H.264" : "Image stream"}</dd></div>
-                {screen ? <div className="flex justify-between"><dt>Resolution</dt><dd>{screen.width} × {screen.height}</dd></div> : null}
-                {videoStats ? <>
-                  <div className="flex justify-between"><dt>Frame rate</dt><dd>{videoStats.paintedFps} fps</dd></div>
-                  <div className="flex justify-between"><dt>Decode queue</dt><dd>{videoStats.queue}</dd></div>
-                  <div className="flex justify-between"><dt>Bandwidth</dt><dd>{Math.round(videoStats.bytesPerSecond / 1024)} KB/s</dd></div>
-                </> : null}
-              </dl>
-            </details>
-            <div className="space-y-0.5 border-t border-border/60 pt-1">
-              <Button size="sm" variant="ghost" className="h-10 w-full justify-start rounded-lg px-2" onClick={() => detach(false)} disabled={busy !== null || !isAttached}><Icon name={glyph("unplug")} />Detach</Button>
-              <Button size="sm" variant="ghost" className="h-10 w-full justify-start rounded-lg px-2 text-destructive hover:text-destructive" onClick={() => detach(true)} disabled={busy !== null || !canDrive}><Icon name={glyph("power")} />Shut down</Button>
-            </div>
-          </DeviceOptions>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

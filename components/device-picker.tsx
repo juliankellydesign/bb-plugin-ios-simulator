@@ -9,12 +9,25 @@ interface Device {
   isAvailable: boolean;
 }
 
-export function DevicePicker({ devices, attached, value, onChange, disabled = false, children }: {
+export function DevicePicker({
+  devices,
+  attached,
+  value,
+  onChange,
+  disabled = false,
+  placement = "bottom",
+  className,
+  triggerClassName,
+  children,
+}: {
   devices: Device[];
   attached: string[];
   value: string | null;
   onChange(udid: string): void;
   disabled?: boolean;
+  placement?: "top" | "bottom";
+  className?: string;
+  triggerClassName?: string;
   children: ReactNode;
 }) {
   const id = useId();
@@ -77,11 +90,11 @@ export function DevicePicker({ devices, attached, value, onChange, disabled = fa
     if (match) setActive(match.udid);
   };
 
-  return <div ref={root} className="device-picker relative min-w-0 flex-1">
+  return <div ref={root} className={`device-picker relative min-w-0 ${className ?? "flex-1"}`}>
     <Button type="button" variant="ghost" role="combobox" aria-label="Simulator device" aria-describedby={valueId}
       aria-expanded={open} aria-haspopup="listbox" aria-controls={open ? listId : undefined}
       aria-activedescendant={open && activeIndex >= 0 ? optionId(active!) : undefined}
-      disabled={disabled} className="device-picker-trigger h-auto min-h-10 w-full justify-start gap-2 rounded-lg px-1 py-0 text-left"
+      disabled={disabled} className={`device-picker-trigger h-auto min-h-9 w-full justify-start gap-2 rounded-lg px-2 py-1 text-left ${triggerClassName ?? ""}`}
       onClick={() => { if (open) setOpen(false); else reveal(); }}
       onBlur={(event) => { if (!(event.relatedTarget instanceof Node) || !root.current?.contains(event.relatedTarget)) setOpen(false); }}
       onKeyDown={(event) => {
@@ -113,7 +126,7 @@ export function DevicePicker({ devices, attached, value, onChange, disabled = fa
     </Button>
     <span id={valueId} className="sr-only">{selected ? `${selected.name}, ${selected.runtime}, ${selected.state === "Booted" ? "Running" : selected.state}` : "Choose a simulator"}</span>
     {open ? <div id={listId} role="listbox" aria-label="Simulator devices"
-      className="device-picker-popup absolute left-0 top-[calc(100%+6px)] z-50 max-h-[min(320px,calc(100cqh_-_80px))] w-80 max-w-[calc(100cqw_-_24px)] overflow-y-auto overscroll-contain rounded-xl border border-border bg-background p-1.5 shadow-xl">
+      className={`device-picker-popup absolute left-0 ${placement === "top" ? "bottom-[calc(100%+8px)]" : "top-[calc(100%+6px)]"} z-50 max-h-[min(320px,calc(100cqh_-_80px))] w-80 max-w-[calc(100cqw_-_24px)] overflow-y-auto overscroll-contain rounded-xl border border-border bg-background p-1.5 shadow-xl`}>
       {groups.map((group, index) => <div key={group.label} role="group" aria-label={group.label} className={index > 0 ? "mt-1 border-t border-border/60 pt-1" : undefined}>
         <p className="px-2.5 pb-1 pt-2 text-[10px] font-medium text-muted-foreground">{group.label}</p>
         {group.devices.map((device) => <div id={optionId(device.udid)} key={device.udid} role="option" aria-selected={device.udid === value}

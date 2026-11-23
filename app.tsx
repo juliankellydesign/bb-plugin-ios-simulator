@@ -32,19 +32,12 @@ function SimulatorWorkspace(props: PluginThreadPanelProps) {
   });
   return (
     <div className="simulator-workspace flex h-full min-h-0 flex-col antialiased">
-      <div className="flex shrink-0 items-center justify-between border-b border-border/60 px-3 py-1">
-        <span className="text-xs font-medium text-muted-foreground">Devices</span>
-        <div role="group" aria-label="Simulator platform" className="flex gap-0.5">
-        {(["ios", "android"] as const).map((value) => (
-          <Button key={value} size="sm" variant="ghost" className="h-10 min-w-14 rounded-lg px-3 text-xs transition-[background-color,color] duration-150 motion-reduce:transition-none"
-            aria-pressed={platform === value} onClick={() => setPlatform(value)}>
-            {value === "ios" ? "iOS" : "Android"}
-          </Button>
-        ))}
-        </div>
-      </div>
       <div className="min-h-0 flex-1">
-        {platform === "ios" ? <SimulatorPanel {...props} /> : <AndroidPanel {...props} />}
+        {platform === "ios" ? (
+          <SimulatorPanel {...props} platform={platform} onPlatformChange={setPlatform} />
+        ) : (
+          <AndroidPanel {...props} platform={platform} onPlatformChange={setPlatform} />
+        )}
       </div>
     </div>
   );
